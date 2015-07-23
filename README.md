@@ -1,4 +1,7 @@
-App Engine application for the Udacity training course.
+App Engine application for the Udacity Project 4 completed by Xiang Zhao Mirko 07/23/2015
+
+## General Description
+This is an app using google appengine cloud API endpoints with front end design to create and register for conferences and the appropriate sessions. 
 
 ## Products
 - [App Engine][1]
