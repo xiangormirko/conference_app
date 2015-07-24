@@ -31,6 +31,10 @@ from models import SessionForms
 from models import Wishlist
 from models import WishlistForm
 
+from models import Speaker
+from models import SpeakerForm
+from models import SpeakerForms
+
 from settings import WEB_CLIENT_ID
 from settings import ANDROID_CLIENT_ID
 from settings import IOS_CLIENT_ID
@@ -45,7 +49,7 @@ ANNOUNCEMENT_TPL = ('Last chance to attend! The following conferences '
                     'are nearly sold out: %s')
 MEMCACHE_FEATURED_SPEAKER_KEY = "FEATURED_SPEAKERS"
 SPEAKER_TPL = ('Check out our feature speaker %s hosting the'
-               'following sessions %s, and the latest %s')
+               'following sessions %s')
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # Default values and conversions
@@ -110,6 +114,12 @@ TIME_GET_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
     startTime=messages.StringField(1),
 )
+
+SPEAKER_EMAIL_GET_REQUEST = endpoints.ResourceContainer(
+    message_types.VoidMessage,
+    mainEmail=messages.StringField(1),
+)
+
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -471,7 +481,7 @@ class ConferenceApi(remote.Service):
             s_id = Session.allocate_ids(size=1, parent=c_key)[0]
             s_key = ndb.Key(Session, s_id, parent=c_key)
             data['key'] = s_key
-
+            print data['websafeKey']
             del data['websafeConferenceKey']
             del data['websafeKey']
 
@@ -482,22 +492,38 @@ class ConferenceApi(remote.Service):
             lenght = len(speakerName)
             speakerName = speakerName[3:lenght-2]
 
-            speakerSessions = Session.query(
-                Session.speaker == speakerName
-                ).fetch(projection=[Session.name])
-            # Join the name of the speaker
-            # and the conference names in a message
-            if len(speakerSessions) > 1:
-                speaker = SPEAKER_TPL % (
-                    speakerName, ', '.join(
-                        speaker.name for speaker in speakerSessions
-                        ), data['name']
-                    )
-                # set memcache with key
-                memcache.set(MEMCACHE_FEATURED_SPEAKER_KEY, speaker)
-                print "A new speaker has been added"
-                "in featured speakers memcache"
+            # speakerSessions = Session.query(
+            #     Session.speaker == speakerName
+            #     ).fetch(projection=[Session.name])
+            # # Join the name of the speaker
+            # # and the conference names in a message
+            # if len(speakerSessions) > 1:
+            #     speaker = SPEAKER_TPL % (
+            #         speakerName, ', '.join(
+            #             speaker.name for speaker in speakerSessions
+            #             ), data['name']
+            #         )
+            #     # set memcache with key
+            #     memcache.set(MEMCACHE_FEATURED_SPEAKER_KEY, speaker)
+            #     print "A new speaker has been added"
+            #     "in featured speakers memcache"
+            taskqueue.add(
+                params={
+                    'speakerName': speakerName,
+                    },
+                url='/tasks/set_featured_speaker'
+                )
 
+            # Check if the speaker is registered
+            # If yes, add teh session websafe key to the sessions list
+            # Else simply use the speaker as unregistered
+            if data['speaker']:
+                spk = Speaker.query(Speaker.name == speakerName).get()
+                if not spk:
+                    print "There is not an official speaker registered"
+                else:
+                    spk.sessionKeysToAttend.append(s_key.urlsafe())
+                    print s_key.urlsafe() + "has been associated to the speaker"
             return request
 
     @endpoints.method(
@@ -840,6 +866,89 @@ class ConferenceApi(remote.Service):
     def saveProfile(self, request):
         """Update & return user profile."""
         return self._doProfile(request)
+# - - - Speakers - - - - - - - - - - - - - - - - - - - -
+
+    def _copySpeakerToForm(self, speaker):
+        """Copy speaker to form"""
+        sp = SpeakerForm()
+        for field in sp.all_fields():
+            if hasattr(speaker, field.name):
+                setattr(sp, field.name, getattr(speaker, field.name))
+            elif field.name == "websafeKey":
+                setattr(sp, field.name, speaker.key.urlsafe())
+        sp.check_initialized()
+        return sp
+
+    def _createSpeaker(self, request):
+        """ Create a speaker if not present"""
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+        user_id = getUserId(user)
+
+        if not request.name:
+                raise endpoints.BadRequestException("Session 'name' field required")
+
+        # copy SpeakerForm/ProtoRPC Message into dict
+        data = {
+            field.name: getattr(request, field.name)
+            for field in request.all_fields()
+            }
+
+        
+        s_key = ndb.Key(Speaker, request.mainEmail)
+        print s_key
+        speaker = s_key.get()
+        print speaker
+        data['key'] = s_key
+
+        del data['websafeKey']
+        print data
+
+        if not speaker:
+            Speaker(**data).put()
+            print "A new speaker has been added"
+
+        else:
+            print "The speaker is already in the database"
+
+        return request
+
+
+
+    @endpoints.method(SpeakerForm, SpeakerForm, path='speaker',
+            http_method='POST', name='createSpeaker')
+    def createSpeaker(self, request):
+        """Create new speaker."""
+        return self._createSpeaker(request)
+
+
+    @endpoints.method(
+            SPEAKER_EMAIL_GET_REQUEST, 
+            SpeakerForm,
+            path='speakers/get/{mainEmail}',
+            http_method='GET', name='getSpeakerByEmail'
+            )
+    def getSpeakerByEmail(self, request):
+        """Return a speaker from email"""
+        # make sure user is authed
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+
+        # get speaker with given email
+        speaker = Speaker.query(Speaker.mainEmail == request.mainEmail).get()
+        print request.mainEmail
+        print speaker
+        # return SpeakerForm
+        if not speaker:
+            raise endpoints.NotFoundException(
+                'No speaker found with this email'
+                )
+
+        return self._copySpeakerToForm(speaker)
+        
+
 
 
 # - - - Announcements - - - - - - - - - - - - - - - - - - - -
@@ -879,7 +988,33 @@ class ConferenceApi(remote.Service):
             data=memcache.get(MEMCACHE_ANNOUNCEMENTS_KEY) or ""
             )
 
-# - - - Feature Speaker - - - - - - - - - - - - - - - - - -
+# - - - Featured Speaker - - - - - - - - - - - - - - - - - -
+
+    @staticmethod
+    def _cacheFeaturedSpeaker(speakerName):
+        """Find featured Speakers & assign to memcache."""
+        speakerSessions = Session.query(
+            Session.speaker == speakerName
+            ).fetch(projection=[Session.name])
+        # Join the name of the speaker
+        # and the conference names in a message
+        if len(speakerSessions) > 1:
+            featuredSpeaker = SPEAKER_TPL % (
+                speakerName, ', '.join(
+                    speaker.name for speaker in speakerSessions
+                    )
+                )
+            # set memcache with key
+            memcache.set(MEMCACHE_FEATURED_SPEAKER_KEY, featuredSpeaker)
+            print "A new speaker has been added"
+            "in featured speakers memcache"
+        else:
+            featuredSpeaker = ""
+            memcache.delete(MEMCACHE_FEATURED_SPEAKER_KEY)
+
+        return featuredSpeaker
+
+
     # Method to get a feature speaker from memecache
     @endpoints.method(
             message_types.VoidMessage, StringMessage,
@@ -891,7 +1026,6 @@ class ConferenceApi(remote.Service):
         return StringMessage(
             data=memcache.get(MEMCACHE_FEATURED_SPEAKER_KEY) or ""
             )
-
 
 # - - - Registration - - - - - - - - - - - - - - - - - - - -
 

@@ -136,6 +136,22 @@ class TeeShirtSize(messages.Enum):
     XXXL_M = 14
     XXXL_W = 15
 
+class Speaker(ndb.Model):
+    name            = ndb.StringProperty(required=True)
+    intro           = ndb.StringProperty()
+    mainEmail       = ndb.StringProperty(required=True)
+    sessionKeysToAttend = ndb.StringProperty(repeated=True)
+
+class SpeakerForm(messages.Message):
+    name            = messages.StringField(1, required=True)
+    mainEmail       = messages.StringField(2, required=True)
+    intro           = messages.StringField(3)
+    sessionKeysToAttend = messages.StringField(4, repeated=True)
+    websafeKey      = messages.StringField(5)
+
+class SpeakerForms(messages.Message):
+    items = messages.MessageField(SpeakerForm, 1, repeated = True)
+
 
 class ConferenceQueryForm(messages.Message):
     """ConferenceQueryForm -- Conference query inbound form message"""
